@@ -1,4 +1,5 @@
 name: Build Kaggle T4 llama-server
+# Reusable Kaggle T4 release build
 
 on:
   push:
