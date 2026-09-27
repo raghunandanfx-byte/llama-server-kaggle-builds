@@ -76,7 +76,121 @@ jobs:
           cmake -LA -N build | grep -E 'CMAKE_CUDA_ARCHITECTURES|GGML_CUDA_NO_VMM|GGML_CUDA_FA_QUANTS|GGML_CUDA_NCCL' || true
 
           grep -q '^GGML_CUDA_NO_VMM:BOOL=OFF$' build/CMakeCache.txt
-          grep -q '^CMAKE_CUDA_ARCHITECTURES:STRING=75$' build/CMakeCache.txt
+          grep -qE '^CMAKE_CUDA_ARCHITECTURES:[^=]+=75
+          grep -q '^GGML_CUDA_FA_QUANTS:STRING=all$' build/CMakeCache.txt
+
+      - name: Build llama-server
+        shell: bash
+        env:
+          CCACHE_DIR: /tmp/ccache
+          CCACHE_MAXSIZE: 6G
+          CCACHE_COMPRESS: "1"
+        run: |
+          set -euxo pipefail
+          cd /tmp/llama.cpp
+          cmake --build build --config Release --target llama-server -j "$(nproc)"
+          ccache -s || true
+
+      - name: Validate binary and ABI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd /tmp/llama.cpp
+          test -x build/bin/llama-server
+
+          echo "=== llama-server --version ==="
+          LD_LIBRARY_PATH="$PWD/build/bin:/usr/local/cuda/lib64" build/bin/llama-server --version
+
+          echo "=== split-mode CLI support ==="
+          LD_LIBRARY_PATH="$PWD/build/bin:/usr/local/cuda/lib64" build/bin/llama-server --help > /tmp/llama-help.txt
+          grep -q -- '--split-mode' /tmp/llama-help.txt
+          grep -q -- 'row' /tmp/llama-help.txt
+          grep -q -- 'tensor' /tmp/llama-help.txt
+
+          echo "=== ldd ==="
+          LD_LIBRARY_PATH="$PWD/build/bin:/usr/local/cuda/lib64" ldd build/bin/llama-server
+          ! LD_LIBRARY_PATH="$PWD/build/bin:/usr/local/cuda/lib64" ldd build/bin/llama-server | grep -q "not found"
+
+          echo "=== GLIBC requirements ==="
+          find build/bin -maxdepth 1 -type f \( -perm -111 -o -name '*.so*' \) -print0 |
+            xargs -0 -r objdump -T 2>/dev/null |
+            grep -oE 'GLIBC_[0-9]+\.[0-9]+' |
+            sort -Vu |
+            tail -n 20 || true
+
+          echo "=== GLIBCXX requirements ==="
+          find build/bin -maxdepth 1 -type f \( -perm -111 -o -name '*.so*' \) -print0 |
+            xargs -0 -r objdump -T 2>/dev/null |
+            grep -oE 'GLIBCXX_[0-9]+\.[0-9]+\.[0-9]+' |
+            sort -Vu |
+            tail -n 20 || true
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd /tmp/llama.cpp
+          mkdir -p "/tmp/$PKG"
+
+          cp -a build/bin/llama-server "/tmp/$PKG/"
+          cp -a build/bin/libggml*.so* "/tmp/$PKG/" 2>/dev/null || true
+          cp -a build/bin/libllama*.so* "/tmp/$PKG/" 2>/dev/null || true
+          cp -a build/bin/libmtmd*.so* "/tmp/$PKG/" 2>/dev/null || true
+          cp -a LICENSE "/tmp/$PKG/"
+
+          printf '%s\n' \
+            "llama.cpp: $LLAMA_TAG" \
+            "Target OS/userspace: Ubuntu 22.04 (glibc 2.35)" \
+            "CUDA toolkit: 12.8.1" \
+            "CUDA architecture: sm_75 (Tesla T4)" \
+            "GGML_CUDA=ON" \
+            "GGML_CUDA_NO_VMM=OFF" \
+            "GGML_CUDA_FA=ON" \
+            "GGML_CUDA_FA_QUANTS=all" \
+            "GGML_CUDA_NCCL=OFF" \
+            'RPATH: $ORIGIN' \
+            "" \
+            "Purpose: experimental Kaggle build for --split-mode row/tensor testing." \
+            "Runtime note: VMM availability still depends on the Kaggle NVIDIA driver/runtime." \
+            "Optional runtime P2P probe: GGML_CUDA_P2P=1." \
+            > "/tmp/$PKG/BUILD-INFO.txt"
+
+          tar -C /tmp -czf "/tmp/$PKG.tar.gz" "$PKG"
+          sha256sum "/tmp/$PKG.tar.gz" > "/tmp/$PKG.tar.gz.sha256"
+          ls -lh "/tmp/$PKG.tar.gz" "/tmp/$PKG.tar.gz.sha256"
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}
+          path: |
+            /tmp/${{ env.PKG }}.tar.gz
+            /tmp/${{ env.PKG }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          cd /tmp
+
+          gh release delete "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --cleanup-tag \
+            --yes 2>/dev/null || true
+
+          gh release create "$RELEASE_TAG" \
+            "$PKG.tar.gz" \
+            "$PKG.tar.gz.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_TAG" \
+            --prerelease \
+            --notes "Experimental precompiled llama-server for Kaggle dual Tesla T4. Ubuntu 22.04 / glibc 2.35, CUDA 12.8.1, sm_75, CUDA VMM enabled, Flash Attention enabled, all FA K/V quant combinations, NCCL disabled. Intended to test --split-mode row and tensor. Actual VMM/P2P behavior must be validated on Kaggle."
+ build/CMakeCache.txt
           grep -q '^GGML_CUDA_FA_QUANTS:STRING=all$' build/CMakeCache.txt
 
       - name: Build llama-server
