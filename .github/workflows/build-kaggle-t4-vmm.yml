@@ -76,7 +76,7 @@ jobs:
           cmake -LA -N build | grep -E 'CMAKE_CUDA_ARCHITECTURES|GGML_CUDA_NO_VMM|GGML_CUDA_FA_QUANTS|GGML_CUDA_NCCL' || true
 
           grep -q '^GGML_CUDA_NO_VMM:BOOL=OFF$' build/CMakeCache.txt
-          grep -qE '^CMAKE_CUDA_ARCHITECTURES:[^=]+=75
+          grep -qE '^CMAKE_CUDA_ARCHITECTURES:[^=]+=75' build/CMakeCache.txt
           grep -q '^GGML_CUDA_FA_QUANTS:STRING=all$' build/CMakeCache.txt
 
       - name: Build llama-server
